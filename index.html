@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unmix</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Archivo:wght@400;600;800&display=swap">
+<style>
+  /* Layout: one column — load bar, the spectrogram as the hero, then four stem channel strips. Dark, single look (a DJ booth). */
+  :root {
+    --bg: #0c0d10; --panel: #15171c; --line: #262a33; --ink: #e9ecf2; --soft: #8b93a3;
+    --drums: #ff5d5d; --bass: #4f8cff; --vocals: #ffc93c; --other: #3ddc97;
+    --display: "Archivo", system-ui, sans-serif; --mono: "Space Mono", ui-monospace, Menlo, monospace;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 var(--display); }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 28px 20px 60px; display: grid; gap: 18px; }
+  h1 { margin: 0; font-weight: 800; font-size: clamp(2rem, 5vw, 3.2rem); letter-spacing: -0.03em; line-height: 1; }
+  .sub { margin: 6px 0 0; color: var(--soft); max-width: 60ch; }
+  .load { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  button, .file {
+    font: 600 0.92rem var(--display); color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 14px; cursor: pointer;
+  }
+  button:hover, .file:hover { border-color: var(--soft); }
+  button:focus-visible, .file:focus-within { outline: 2px solid var(--vocals); outline-offset: 2px; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  .file input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  #status { font: 0.82rem var(--mono); color: var(--soft); }
+  .bar { height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; }
+  #progress { height: 100%; width: 0; background: var(--vocals); transition: width 0.15s; }
+
+  .spec { position: relative; background: #000; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  #spec { display: block; width: 100%; height: 340px; cursor: pointer; image-rendering: auto; }
+  #playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; left: 0; pointer-events: none; box-shadow: 0 0 8px #fff; }
+  .axis { position: absolute; left: 8px; font: 0.7rem var(--mono); color: rgba(255,255,255,0.55); pointer-events: none; }
+  .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--soft); font: 0.9rem var(--mono); text-align: center; padding: 20px; }
+
+  .transport { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  #time { font: 0.9rem var(--mono); color: var(--soft); font-variant-numeric: tabular-nums; }
+
+  .stems { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+  .stem { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: grid; gap: 10px; border-top: 3px solid var(--c); }
+  .stem h2 { margin: 0; font-size: 1.1rem; font-weight: 800; display: flex; justify-content: space-between; align-items: baseline; }
+  .stem h2 small { font: 0.7rem var(--mono); color: var(--soft); font-weight: 400; }
+  .stem p { margin: 0; color: var(--soft); font-size: 0.84rem; min-height: 3.6em; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row button { padding: 5px 10px; font-size: 0.8rem; }
+  .row button[aria-pressed="true"] { background: var(--c); color: #000; border-color: var(--c); }
+  input[type=range] { flex: 1; accent-color: var(--c); min-width: 0; }
+  .meter { height: 8px; background: #0a0b0d; border-radius: 4px; overflow: hidden; }
+  .meter span { display: block; height: 100%; width: 0; background: var(--c); }
+  @media (max-width: 500px) { #spec { height: 240px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Unmix</h1>
+    <p class="sub">Splits a song into drums, bass, vocals and everything else using only signal-processing math. No AI. Each color on the spectrogram shows which stem that sound was assigned to.</p>
+  </header>
+
+  <div class="load">
+    <button id="demo" class="primary" type="button">Try the demo track</button>
+    <label class="file">Load a song…<input id="file" type="file" accept="audio/*"></label>
+    <span id="status">Songs longer than 90 seconds are cut to the first 90.</span>
+  </div>
+  <div class="bar"><div id="progress"></div></div>
+
+  <div class="spec">
+    <canvas id="spec" width="1600" height="340"></canvas>
+    <div id="playhead" hidden></div>
+    <span class="axis" style="top:6px">16 kHz</span>
+    <span class="axis" style="top:50%">~700 Hz</span>
+    <span class="axis" style="bottom:6px">30 Hz</span>
+    <div class="empty" id="empty">Load a song or try the demo.<br>Horizontal lines are notes. Vertical lines are hits.</div>
+  </div>
+
+  <div class="transport">
+    <button id="play" type="button" disabled>Play</button>
+    <span id="time">0:00 / 0:00</span>
+  </div>
+
+  <div class="stems" id="stems"></div>
+</div>
+
+<script id="worker-src" type="text/js-worker">
+// ---- Runs in a Web Worker so the page stays responsive ----
+const N = 2048, HOP = 512, B = N / 2 + 1, MED = 17;
+
+function makeFFT(n) {
+  const rev = new Uint32Array(n), bits = Math.log2(n);
+  for (let i = 0; i < n; i++) { let r = 0; for (let b = 0; b < bits; b++) r |= ((i >> b) & 1) << (bits - 1 - b); rev[i] = r; }
+  const cos = new Float64Array(n / 2), sin = new Float64Array(n / 2);
+  for (let i = 0; i < n / 2; i++) { cos[i] = Math.cos(2 * Math.PI * i / n); sin[i] = Math.sin(2 * Math.PI * i / n); }
+  return (re, im, inv) => {
+    for (let i = 0; i < n; i++) { const j = rev[i]; if (j > i) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } }
+    const s = inv ? -1 : 1;
+    for (let size = 2; size <= n; size <<= 1) {
+      const half = size >> 1, step = n / size;
+      for (let i = 0; i < n; i += size) for (let j = 0, k = 0; j < half; j++, k += step) {
+        const a = i + j, l = a + half;
+        const tr = re[l] * cos[k] + s * im[l] * sin[k];
+        const ti = im[l] * cos[k] - s * re[l] * sin[k];
+        re[l] = re[a] - tr; im[l] = im[a] - ti; re[a] += tr; im[a] += ti;
+      }
+    }
+    if (inv) for (let i = 0; i < n; i++) { re[i] /= n; im[i] /= n; }
+  };
+}
+
+function median(buf, len) {
+  // insertion sort is fast for 17 values
+  for (let i = 1; i < len; i++) { const v = buf[i]; let j = i - 1; while (j >= 0 && buf[j] > v) { buf[j + 1] = buf[j]; j--; } buf[j + 1] = v; }
+  return buf[len >> 1];
+}
+
+const smooth = (x, a, b) => Math.max(0, Math.min(1, (x - a) / (b - a)));
+
+onmessage = ({ data: { L, R, sr } }) => {
+  const len = L.length, T = Math.floor(len / HOP) + 1;
+  const fft = makeFFT(N);
+  const win = new Float64Array(N);
+  for (let i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N);
+  const re = new Float64Array(N), im = new Float64Array(N);
+  const progress = (p, msg) => postMessage({ type: 'progress', p, msg });
+
+  // 1. Spectrogram of the mid (L+R) signal: magnitude per frame × frequency bin.
+  const M = new Float32Array(T * B);
+  for (let t = 0; t < T; t++) {
+    const start = t * HOP - N / 2;
+    for (let n = 0; n < N; n++) { const i = start + n; re[n] = i >= 0 && i < len ? (L[i] + R[i]) * 0.5 * win[n] : 0; im[n] = 0; }
+    fft(re, im, false);
+    for (let k = 0; k < B; k++) M[t * B + k] = Math.hypot(re[k], im[k]);
+    if (t % 400 === 0) progress(0.2 * t / T, 'Computing spectrogram');
+  }
+
+  // 2. Median filters. Along time keeps steady notes (horizontal lines);
+  //    along frequency keeps drum hits (vertical lines).
+  const H = new Float32Array(T * B), P = new Float32Array(T * B), buf = new Float32Array(MED);
+  const h = MED >> 1;
+  for (let k = 0; k < B; k++) {
+    for (let t = 0; t < T; t++) {
+      let c = 0;
+      for (let d = -h; d <= h; d++) { const tt = t + d; buf[c++] = tt >= 0 && tt < T ? M[tt * B + k] : 0; }
+      H[t * B + k] = median(buf, MED);
+    }
+    if (k % 64 === 0) progress(0.2 + 0.3 * k / B, 'Finding notes (horizontal median filter)');
+  }
+  for (let t = 0; t < T; t++) {
+    for (let k = 0; k < B; k++) {
+      let c = 0;
+      for (let d = -h; d <= h; d++) { const kk = k + d; buf[c++] = kk >= 0 && kk < B ? M[t * B + kk] : 0; }
+      P[t * B + k] = median(buf, MED);
+    }
+    if (t % 400 === 0) progress(0.5 + 0.2 * t / T, 'Finding hits (vertical median filter)');
+  }
+
+  // Per-bin frequency weights.
+  const bassW = new Float32Array(B), vocalW = new Float32Array(B);
+  for (let k = 0; k < B; k++) {
+    const f = k * sr / N;
+    bassW[k] = 1 - smooth(f, 120, 260);                       // low end → bass
+    vocalW[k] = smooth(f, 180, 320) * (1 - smooth(f, 6000, 9000)); // voice range
+  }
+
+  // Display: log-frequency rows, accumulated color per pixel.
+  const W = Math.min(1600, T), ROWS = 340;
+  const rowOf = new Int32Array(B).fill(-1);
+  for (let k = 1; k < B; k++) {
+    const f = k * sr / N;
+    if (f < 30 || f > 16000) continue;
+    rowOf[k] = ROWS - 1 - Math.floor(Math.log(f / 30) / Math.log(16000 / 30) * (ROWS - 1));
+  }
+  const img = new Float32Array(W * ROWS * 4); // r,g,b,energy
+  const COLORS = [[255, 93, 93], [79, 140, 255], [255, 201, 60], [61, 220, 151]];
+
+  // 3. Rebuild each stem: take the left and right spectra, keep each bin's
+  //    share for that stem, and turn it back into sound (inverse FFT).
+  const out = Array.from({ length: 4 }, () => [new Float32Array(len), new Float32Array(len)]);
+  const norm = new Float32Array(len);
+  const Lr = new Float64Array(N), Li = new Float64Array(N), Rr = new Float64Array(N), Ri = new Float64Array(N);
+  const masks = Array.from({ length: 4 }, () => new Float32Array(B));
+  const eps = 1e-9;
+
+  for (let t = 0; t < T; t++) {
+    const start = t * HOP - N / 2;
+    for (let n = 0; n < N; n++) {
+      const i = start + n, ok = i >= 0 && i < len;
+      Lr[n] = ok ? L[i] * win[n] : 0; Li[n] = 0;
+      Rr[n] = ok ? R[i] * win[n] : 0; Ri[n] = 0;
+    }
+    fft(Lr, Li, false);
+    fft(Rr, Ri, false);
+
+    const col = Math.floor(t * W / T);
+    for (let k = 0; k < B; k++) {
+      const idx = t * B + k;
+      const h2 = H[idx] * H[idx], p2 = P[idx] * P[idx];
+      const harm = h2 / (h2 + p2 + eps);          // 0 = hit, 1 = note
+      // Centered = same in both speakers. 1 when L == R, 0 when hard-panned.
+      const sr_ = Lr[k] + Rr[k], si = Li[k] + Ri[k], dr = Lr[k] - Rr[k], di = Li[k] - Ri[k];
+      const center = Math.pow(Math.max(0, 1 - Math.hypot(dr, di) / (Math.hypot(sr_, si) + eps)), 2);
+
+      const drums = 1 - harm;
+      const bass = harm * bassW[k];
+      const vocals = harm * (1 - bassW[k]) * center * vocalW[k];
+      const other = harm - bass - vocals;
+      masks[0][k] = drums; masks[1][k] = bass; masks[2][k] = vocals; masks[3][k] = other;
+
+      const r = rowOf[k];
+      if (r >= 0) {
+        const p = (r * W + col) * 4, e = M[idx];
+        const ws = [drums, bass, vocals, other];
+        for (let s = 0; s < 4; s++) { const w = ws[s] * e; img[p] += w * COLORS[s][0]; img[p + 1] += w * COLORS[s][1]; img[p + 2] += w * COLORS[s][2]; }
+        img[p + 3] += e;
+      }
+    }
+
+    for (let s = 0; s < 4; s++) {
+      const m = masks[s];
+      for (const [Xr, Xi, dst] of [[Lr, Li, out[s][0]], [Rr, Ri, out[s][1]]]) {
+        for (let k = 0; k < B; k++) { re[k] = Xr[k] * m[k]; im[k] = Xi[k] * m[k]; }
+        for (let k = 1; k < N / 2; k++) { re[N - k] = re[k]; im[N - k] = -im[k]; }
+        fft(re, im, true);
+        for (let n = 0; n < N; n++) { const i = start + n; if (i >= 0 && i < len) dst[i] += re[n] * win[n]; }
+      }
+    }
+    for (let n = 0; n < N; n++) { const i = start + n; if (i >= 0 && i < len) norm[i] += win[n] * win[n]; }
+    if (t % 200 === 0) progress(0.7 + 0.3 * t / T, 'Rebuilding the four stems');
+  }
+  for (const pair of out) for (const ch of pair) for (let i = 0; i < len; i++) if (norm[i] > 1e-6) ch[i] /= norm[i];
+
+  // Brightness from loudness in dB, color from the stem mix.
+  let maxE = 0;
+  for (let i = 3; i < img.length; i += 4) maxE = Math.max(maxE, img[i]);
+  const pixels = new Uint8ClampedArray(W * ROWS * 4);
+  for (let i = 0; i < W * ROWS; i++) {
+    const e = img[i * 4 + 3];
+    if (e <= 0) { pixels[i * 4 + 3] = 255; continue; }
+    const db = 20 * Math.log10(e / maxE);
+    const b = Math.pow(Math.max(0, 1 + db / 75), 1.6);
+    pixels[i * 4] = img[i * 4] / e * b; pixels[i * 4 + 1] = img[i * 4 + 1] / e * b; pixels[i * 4 + 2] = img[i * 4 + 2] / e * b; pixels[i * 4 + 3] = 255;
+  }
+
+  const transfer = [pixels.buffer];
+  for (const pair of out) for (const ch of pair) transfer.push(ch.buffer);
+  postMessage({ type: 'done', stems: out, pixels, W, ROWS }, transfer);
+};
+</script>
+
+<script>
+const STEMS = [
+  { id: 'drums', name: 'Drums', how: 'Hits are short and wide: vertical lines on the spectrogram. A median filter down each column keeps them.' },
+  { id: 'bass', name: 'Bass', how: 'Steady notes below about 120–260 Hz. Everything tonal down low lands here.' },
+  { id: 'vocals', name: 'Vocals', how: 'Steady notes in the voice range that are equally loud in both speakers. Lead vocals are almost always mixed dead center.' },
+  { id: 'other', name: 'Other', how: 'Whatever is left: synths, guitars and pads, especially anything panned left or right.' },
+];
+const MAX_SECONDS = 90;
+const $ = (id) => document.getElementById(id);
+
+let ctx, buffers = null, sources = [], gains = [], analysers = [], startedAt = 0, offset = 0, playing = false, duration = 0;
+const state = STEMS.map(() => ({ vol: 1, mute: false, solo: false }));
+
+// ---- stem strips ----
+STEMS.forEach((s, i) => {
+  const el = document.createElement('section');
+  el.className = 'stem';
+  el.style.setProperty('--c', `var(--${s.id})`);
+  el.innerHTML = `
+    <h2>${s.name} <small id="lvl-${i}">—</small></h2>
+    <p>${s.how}</p>
+    <div class="meter"><span id="meter-${i}"></span></div>
+    <div class="row">
+      <button type="button" id="mute-${i}" aria-pressed="false">Mute</button>
+      <button type="button" id="solo-${i}" aria-pressed="false">Solo</button>
+      <input type="range" id="vol-${i}" min="0" max="1.5" step="0.01" value="1" aria-label="${s.name} volume">
+    </div>`;
+  $('stems').append(el);
+  $(`mute-${i}`).onclick = (e) => { state[i].mute = !state[i].mute; e.target.setAttribute('aria-pressed', state[i].mute); applyGains(); };
+  $(`solo-${i}`).onclick = (e) => { state[i].solo = !state[i].solo; e.target.setAttribute('aria-pressed', state[i].solo); applyGains(); };
+  $(`vol-${i}`).oninput = (e) => { state[i].vol = +e.target.value; applyGains(); };
+});
+
+function applyGains() {
+  const anySolo = state.some((s) => s.solo);
+  gains.forEach((g, i) => {
+    const s = state[i];
+    const on = !s.mute && (!anySolo || s.solo);
+    g.gain.setTargetAtTime(on ? s.vol : 0, ctx.currentTime, 0.02);
+  });
+}
+
+function ensureCtx() {
+  if (!ctx) {
+    ctx = new AudioContext();
+    gains = STEMS.map(() => ctx.createGain());
+    analysers = STEMS.map((_, i) => { const a = ctx.createAnalyser(); a.fftSize = 1024; gains[i].connect(a); a.connect(ctx.destination); return a; });
+  }
+  return ctx;
+}
+
+// ---- loading ----
+$('file').addEventListener('change', async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  stop(); setStatus(`Decoding ${f.name}…`);
+  try {
+    const audio = await ensureCtx().decodeAudioData(await f.arrayBuffer());
+    split(audio);
+  } catch {
+    setStatus('That file could not be decoded. Try an MP3, WAV, or M4A.');
+  }
+});
+
+$('demo').addEventListener('click', async () => {
+  stop(); setStatus('Synthesizing the demo track…');
+  ensureCtx();
+  split(await makeDemo());
+});
+
+function setStatus(msg) { $('status').textContent = msg; }
+
+function split(audio) {
+  const sr = audio.sampleRate;
+  const len = Math.min(audio.length, Math.floor(MAX_SECONDS * sr));
+  const L = audio.getChannelData(0).slice(0, len);
+  const R = (audio.numberOfChannels > 1 ? audio.getChannelData(1) : audio.getChannelData(0)).slice(0, len);
+  if (audio.numberOfChannels === 1) setStatus('This file is mono, so vocals can’t be found by position. Splitting anyway…');
+
+  $('play').disabled = true;
+  const url = URL.createObjectURL(new Blob([$('worker-src').textContent], { type: 'text/javascript' }));
+  const worker = new Worker(url);
+  const t0 = performance.now();
+  worker.onmessage = ({ data }) => {
+    if (data.type === 'progress') {
+      $('progress').style.width = `${(data.p * 100).toFixed(1)}%`;
+      setStatus(data.msg + '…');
+      return;
+    }
+    worker.terminate();
+    URL.revokeObjectURL(url);
+    $('progress').style.width = '100%';
+    drawSpec(data.pixels, data.W, data.ROWS);
+    buffers = data.stems.map(([l, r]) => {
+      const b = ctx.createBuffer(2, len, sr);
+      b.copyToChannel(l, 0); b.copyToChannel(r, 1);
+      return b;
+    });
+    duration = len / sr;
+    offset = 0;
+    $('play').disabled = false;
+    setStatus(`Split ${duration.toFixed(0)} s of audio in ${((performance.now() - t0) / 1000).toFixed(1)} s. Press Play, then try Solo.`);
+    updateTime();
+  };
+  worker.postMessage({ L, R, sr }, [L.buffer, R.buffer]);
+}
+
+function drawSpec(pixels, W, ROWS) {
+  const c = $('spec');
+  c.width = W; c.height = ROWS;
+  c.getContext('2d').putImageData(new ImageData(pixels, W, ROWS), 0, 0);
+  $('empty').hidden = true;
+  $('playhead').hidden = false;
+}
+
+// ---- playback ----
+function play() {
+  ensureCtx().resume();
+  sources = buffers.map((b, i) => { const s = ctx.createBufferSource(); s.buffer = b; s.connect(gains[i]); return s; });
+  const at = ctx.currentTime + 0.05;
+  sources.forEach((s) => s.start(at, offset));
+  sources[0].onended = () => { if (playing && now() >= duration - 0.05) { stop(); offset = 0; updateTime(); } };
+  startedAt = at - offset;
+  playing = true;
+  applyGains();
+  $('play').textContent = 'Pause';
+}
+function stop() {
+  if (playing) { offset = now(); sources.forEach((s) => { s.onended = null; s.stop(); }); }
+  playing = false;
+  $('play').textContent = 'Play';
+}
+const now = () => (playing ? Math.min(duration, ctx.currentTime - startedAt) : offset);
+
+$('play').onclick = () => (playing ? stop() : play());
+$('spec').addEventListener('click', (e) => {
+  if (!buffers) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  const wasPlaying = playing;
+  stop();
+  offset = Math.max(0, Math.min(duration, ((e.clientX - r.left) / r.width) * duration));
+  if (wasPlaying) play();
+  updateTime();
+});
+
+const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+function updateTime() {
+  const t = now();
+  $('time').textContent = `${fmt(t)} / ${fmt(duration)}`;
+  $('playhead').style.left = duration ? `${(t / duration) * 100}%` : '0';
+}
+
+const scratch = new Float32Array(1024);
+(function loop() {
+  if (buffers) updateTime();
+  analysers.forEach((a, i) => {
+    a.getFloatTimeDomainData(scratch);
+    let sum = 0;
+    for (const v of scratch) sum += v * v;
+    const db = 20 * Math.log10(Math.sqrt(sum / scratch.length) + 1e-9);
+    $(`meter-${i}`).style.width = `${Math.max(0, Math.min(100, (db + 60) / 60 * 100))}%`;
+    $(`lvl-${i}`).textContent = playing ? `${Math.max(-60, db).toFixed(0)} dB` : '—';
+  });
+  requestAnimationFrame(loop);
+})();
+
+// ---- demo track: 120 BPM loop in A minor, built from oscillators and noise ----
+async function makeDemo() {
+  const sr = 44100, bars = 8, beat = 0.5, secs = bars * 4 * beat;
+  const oc = new OfflineAudioContext(2, sr * secs, sr);
+  const noise = oc.createBuffer(1, sr, sr);
+  noise.getChannelData(0).forEach((_, i, a) => (a[i] = Math.random() * 2 - 1));
+  const out = (pan = 0, gain = 1) => { const g = oc.createGain(); g.gain.value = gain; const p = oc.createStereoPanner(); p.pan.value = pan; g.connect(p).connect(oc.destination); return g; };
+  const env = (param, t, peak, a, d) => { param.setValueAtTime(0.0001, t); param.exponentialRampToValueAtTime(peak, t + a); param.exponentialRampToValueAtTime(0.0001, t + a + d); };
+
+  const kickOut = out(0, 0.9), snareOut = out(0, 0.35), hatOut = out(0.25, 0.12);
+  for (let b = 0; b < bars * 4; b++) {
+    const t = b * beat;
+    const k = oc.createOscillator(), kg = oc.createGain();
+    k.frequency.setValueAtTime(140, t); k.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    env(kg.gain, t, 1, 0.002, 0.3); k.connect(kg).connect(kickOut); k.start(t); k.stop(t + 0.35);
+    if (b % 2 === 1) {
+      const n = oc.createBufferSource(), bp = oc.createBiquadFilter(), g = oc.createGain();
+      n.buffer = noise; bp.type = 'bandpass'; bp.frequency.value = 1900; bp.Q.value = 0.7;
+      env(g.gain, t, 1, 0.002, 0.18); n.connect(bp).connect(g).connect(snareOut); n.start(t); n.stop(t + 0.22);
+    }
+    for (const h of [0, beat / 2]) {
+      const n = oc.createBufferSource(), hp = oc.createBiquadFilter(), g = oc.createGain();
+      n.buffer = noise; hp.type = 'highpass'; hp.frequency.value = 7500;
+      env(g.gain, t + h, 1, 0.001, 0.045); n.connect(hp).connect(g).connect(hatOut); n.start(t + h); n.stop(t + h + 0.06);
+    }
+  }
+
+  // Bass: one root per bar, pulsing eighths
+  const roots = [55, 43.65, 65.41, 49];
+  const bassOut = out(0, 0.5), bassLp = oc.createBiquadFilter();
+  bassLp.type = 'lowpass'; bassLp.frequency.value = 380; bassLp.connect(bassOut);
+  for (let i = 0; i < bars * 8; i++) {
+    const t = i * beat / 2, f = roots[Math.floor(i / 8) % 4];
+    const o = oc.createOscillator(), g = oc.createGain();
+    o.type = 'sawtooth'; o.frequency.value = f;
+    env(g.gain, t, 0.8, 0.005, 0.22); o.connect(g).connect(bassLp); o.start(t); o.stop(t + 0.25);
+  }
+
+  // Chords: wide pads, hard-panned left and right
+  const chords = [[220, 261.6, 329.6], [174.6, 220, 261.6], [261.6, 329.6, 392], [196, 246.9, 293.7]];
+  for (let bar = 0; bar < bars; bar++) {
+    const t = bar * 4 * beat;
+    chords[bar % 4].forEach((f, j) => {
+      for (const pan of [-0.9, 0.9]) {
+        const o = oc.createOscillator(), g = oc.createGain();
+        o.type = 'triangle'; o.frequency.value = f * (pan < 0 ? 1 : 1.003) * (j === 2 && pan > 0 ? 2 : 1);
+        g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(0.05, t + 0.3); g.gain.linearRampToValueAtTime(0.0001, t + 2);
+        o.connect(g).connect(out(pan)); o.start(t); o.stop(t + 2);
+      }
+    });
+  }
+
+  // "Voice": a sawtooth through two vowel formants with vibrato, mixed center
+  const melody = [[440, 1], [523.3, 1], [659.3, 2], [587.3, 1], [523.3, 1], [440, 2], [392, 1], [440, 1], [523.3, 1], [587.3, 1], [523.3, 2], [440, 2]];
+  const vOut = out(0, 0.5);
+  const f1 = oc.createBiquadFilter(), f2 = oc.createBiquadFilter();
+  f1.type = f2.type = 'bandpass'; f1.frequency.value = 750; f2.frequency.value = 1250; f1.Q.value = f2.Q.value = 5;
+  f1.connect(vOut); f2.connect(vOut);
+  let t = 4 * beat * 2; // voice enters at bar 3
+  for (const [f, beats] of melody) {
+    const d = beats * beat * 2, o = oc.createOscillator(), g = oc.createGain(), lfo = oc.createOscillator(), lg = oc.createGain();
+    o.type = 'sawtooth'; o.frequency.value = f; lfo.frequency.value = 5.5; lg.gain.value = f * 0.012;
+    lfo.connect(lg).connect(o.frequency);
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(0.9, t + 0.06); g.gain.setValueAtTime(0.9, t + d - 0.1); g.gain.linearRampToValueAtTime(0.0001, t + d);
+    o.connect(g); g.connect(f1); g.connect(f2);
+    o.start(t); lfo.start(t); o.stop(t + d); lfo.stop(t + d);
+    t += d;
+    if (t >= secs) break;
+  }
+  return oc.startRendering();
+}
+</script>
+</body>
+</html>
